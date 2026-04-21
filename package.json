@@ -1,0 +1,38 @@
+{
+  "name": "notiformer",
+  "version": "1.0.6",
+  "description": "Real-time alerts, notifications and feature gates for your backend code",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "notifications",
+    "alerts",
+    "monitoring",
+    "feature-flags",
+    "feature-gates",
+    "events",
+    "saas",
+    "developer-tools"
+  ],
+  "author": "Notiformer",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/notiformer"
+  },
+  "homepage": "https://notiformer.com",
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
