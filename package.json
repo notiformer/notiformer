@@ -1,7 +1,7 @@
 {
   "name": "notiformer",
-  "version": "1.0.6",
-  "description": "Real-time alerts, notifications and feature gates for your backend code",
+  "version": "1.1.2",
+  "description": "Human-in-the-loop approval gates and real-time push notifications for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -13,22 +13,29 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
+    "human-in-the-loop",
+    "ai-agent",
+    "ai-agent-approval",
+    "approval-gate",
     "notifications",
     "alerts",
     "monitoring",
     "feature-flags",
     "feature-gates",
     "events",
-    "saas",
+    "push-notifications",
     "developer-tools"
   ],
   "author": "Notiformer",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/notiformer"
+    "url": "https://github.com/notiformer/notiformer"
   },
-  "homepage": "https://notiformer.com",
+  "homepage": "https://docs.notiformer.com",
+  "bugs": {
+    "url": "https://github.com/notiformer/notiformer/issues"
+  },
   "devDependencies": {
     "typescript": "^5.3.3"
   },
