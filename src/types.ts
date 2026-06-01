@@ -1,35 +1,39 @@
+/**
+ * SDK types — public surface for consumers of the npm package.
+ *
+ * The new error codes for the v2 billing model:
+ *   - "card_required"        → user has no valid card on file (402)
+ *   - "card_locked"          → card declined; grace period expired (402)
+ *   - "cap_reached"          → hard system cap hit for this billing cycle (402)
+ *   - "feature_not_available"→ feature requires Pro plan (403)
+ *
+ * The old "quota_exceeded" code is gone — there is no monthly event limit
+ * anymore, only a credit allowance + cap.
+ */
+
 export interface NotiformerConfig {
   apiKey: string;
   silent?: boolean;
   throwOnError?: boolean;
-  onError?: (err: Error) => void;
-  _baseUrl?: string; // internal: override API URL
+  onError?: (err: NotiformerError) => void;
+  _baseUrl?: string;
 }
 
+// ──────────────────────────────────────────────
+// Event payload
+// ──────────────────────────────────────────────
+
 export interface EventPayload {
-  /** Channel name (lowercase, letters, numbers, hyphens, underscores). */
   channel: string;
-  /** Short event name. */
   event: string;
   description?: string;
-  icon?: string; // emoji
+  icon?: string;
   tags?: Record<string, string | number | boolean>;
   value?: string | number;
-  /**
-   * Whether to send push/email notifications.
-   * Defaults to true.
-   */
   notify?: boolean;
   /**
    * Specific email addresses to notify.
-   *
-   * If set, **only** these emails receive notifications — the default
-   * (owner + channel subscribers) is ignored.
-   *
-   * Plan limits: Free=1, Starter=3, Pro=10, Business=30.
-   *
-   * @example
-   * recipients: ['alice@company.com', 'bob@company.com']
+   * Plan limits: Dev=1, Pro=10.
    */
   recipients?: string[];
 }
@@ -38,125 +42,116 @@ export interface EventResponse {
   id: string;
   createdAt: string;
   rateLimited?: boolean;
+  /** Cumulative cost of this billing cycle so far, in micro-USD. */
+  usageMicroUsd?: number;
 }
+
+// ──────────────────────────────────────────────
+// Gate (feature flag — Pro plan only)
+// ──────────────────────────────────────────────
 
 export interface GateOptions {
   fallback?: boolean;
-  cacheTtl?: number; // seconds
+  cacheTtl?: number;
 }
 
 export interface GateResult {
   key: string;
   enabled: boolean;
   cached: boolean;
-  fetchedAt: string;
 }
 
+// ──────────────────────────────────────────────
+// Ask
+// ──────────────────────────────────────────────
+
 export interface AskPayload {
-  /** The question shown in the push notification title. */
   message: string;
-  /** Optional extra detail shown in the notification body (max 500 chars). */
   context?: string;
-  /**
-   * Optional long-form text shown in the approval detail screen of the
-   * Notiformer app. Supports newlines — use \n to structure content.
-   * Max 10,000 characters.
-   *
-   * @example
-   * details: `CHANGES\n• Fix auth bug\n\nROLLBACK\n./rollback.sh v1.0.9`
-   */
   details?: string;
-  /**
-   * Seconds to wait for a response before applying the fallback.
-   * Default: 300 (5 min). Maximum depends on your plan:
-   * Starter=300s, Pro=900s, Business=3600s.
-   */
+  /** Seconds. Max depends on plan: Dev=300, Pro=900. */
   timeout?: number;
-  /**
-   * What to return if nobody responds before the timeout.
-   * Default: 'deny' (safe — approved will be false).
-   */
   fallback?: "deny" | "approve";
 }
 
 export interface AskResult {
-  /** true if the user tapped Approve, false if they tapped Deny or it timed out. */
   approved: boolean;
-  /** true if nobody responded before the timeout expired. */
   timedOut: boolean;
-  /** ISO timestamp of when the user responded. null if timed out. */
   respondedAt: string | null;
 }
 
-// ─────────────────────────────────────────────
-// n.select() — multi-option approval gate
-// ─────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// Select
+// ──────────────────────────────────────────────
 
 export interface SelectOption {
-  /**
-   * The value returned in `result.selected` when this option is chosen.
-   * Max 50 chars. Use a short descriptive string.
-   *
-   * @example 'deploy' | 'rollback' | 'cancel'
-   */
   value: string;
-  /**
-   * The button label shown in the Notiformer app.
-   * Max 80 chars. Supports emoji.
-   *
-   * @example '🚀 Deploy to production'
-   */
   label: string;
-  /**
-   * If true, the button is styled destructively (red) in the mobile app.
-   * Use for dangerous or irreversible actions.
-   */
   isDestructive?: boolean;
 }
 
 export interface SelectPayload {
-  /**
-   * The question shown as the push notification title. Required.
-   */
   message: string;
-  /**
-   * The options shown as buttons in the Notiformer app.
-   * Minimum 2, maximum 6 options.
-   */
   options: SelectOption[];
-  /** Optional detail shown in the notification body (max 500 chars). */
   context?: string;
-  /**
-   * Optional long-form text shown in the approval detail screen.
-   * Supports newlines. Max 10,000 chars.
-   */
   details?: string;
-  /**
-   * Seconds to wait before applying the fallback.
-   * Default: 300. Maximum depends on your plan.
-   */
   timeout?: number;
-  /**
-   * The option value to return automatically if nobody responds.
-   * Must match one of the option values exactly.
-   * If omitted, `selected` is null on timeout.
-   *
-   * @example 'cancel' // safe default
-   */
+  /** A value matching one of the option values, used if timed out. */
   fallback?: string;
 }
 
 export interface SelectResult {
-  /**
-   * The value string of the option the user selected,
-   * or the fallback value on timeout.
-   * Null if timed out with no fallback set.
-   */
   selected: string | null;
-  /** True if nobody responded before the timeout expired. */
   timedOut: boolean;
-  /** ISO timestamp of when the user responded. null if timed out. */
   respondedAt: string | null;
 }
 
-export type LogLevel = "debug" | "info" | "warn" | "error" | "none" | "silent";
+// ──────────────────────────────────────────────
+// Errors
+// ──────────────────────────────────────────────
+
+export type NotiformerErrorCode =
+  | "invalid_api_key"
+  | "card_required"
+  | "card_locked"
+  | "cap_reached"
+  | "feature_not_available"
+  | "validation"
+  | "rate_limited"
+  | "network"
+  | "internal";
+
+export class NotiformerError extends Error {
+  code: NotiformerErrorCode;
+  /** HTTP status returned by the API, when applicable. */
+  status?: number;
+  /** When code = "cap_reached", this is the ISO date when the cycle resets. */
+  cycleResetsAt?: string;
+  /** URL to manage billing in the Notiformer dashboard. */
+  manageUrl?: string;
+  /**
+   * Direct URL to start the Pro upgrade flow (Stripe Checkout, pre-configured
+   * for the authenticated user). Present when code = "cap_reached" on Dev plan.
+   * Open this in a browser — the user must be logged into app.notiformer.com.
+   */
+  upgradeUrl?: string;
+
+  constructor(
+    message: string,
+    code: NotiformerErrorCode,
+    extras?: {
+      status?: number;
+      cycleResetsAt?: string;
+      manageUrl?: string;
+      upgradeUrl?: string;
+    },
+  ) {
+    super(message);
+    this.name = "NotiformerError";
+    this.code = code;
+    if (extras?.status) this.status = extras.status;
+    if (extras?.cycleResetsAt) this.cycleResetsAt = extras.cycleResetsAt;
+    if (extras?.manageUrl) this.manageUrl = extras.manageUrl;
+    if (extras?.upgradeUrl) this.upgradeUrl = extras.upgradeUrl;
+  }
+}
