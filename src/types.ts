@@ -155,3 +155,5 @@ export class NotiformerError extends Error {
     if (extras?.upgradeUrl) this.upgradeUrl = extras.upgradeUrl;
   }
 }
+
+export type LogLevel = "debug" | "info" | "warn" | "error" | "none" | "silent";
