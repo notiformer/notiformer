@@ -405,41 +405,46 @@ export class Notiformer {
   }
 
   /**
-   * Print a user-friendly message for billing errors (402).
-   * This is what developers see in their console — should be actionable.
-   */
-  /**
    * Print a formatted, actionable billing error in the developer console.
    */
   private logBilling(err: NotiformerError): void {
-    const hr = "─".repeat(52);
-
     if (err.code === "cap_reached") {
       const resetStr = err.cycleResetsAt
         ? new Date(err.cycleResetsAt).toDateString()
         : "next billing cycle";
 
-      const isProCap = err.message.toLowerCase().includes("pro plan");
+      // The message from the server already contains the plan name.
+      // We detect whether this is a Dev quota-exhaustion or a paid-plan
+      // overage cap to decide what upgrade copy to show.
+      const isDevCap =
+        err.message.toLowerCase().includes("dev plan") ||
+        err.message.toLowerCase().includes("trial credit");
+      const isTeamCap = err.message.toLowerCase().includes("team plan");
+
       const lines = [
         ``,
         `┌${"─".repeat(52)}┐`,
-        `│  notiformer — spending cap reached${" ".repeat(17)}│`,
+        `│  notiformer — usage limit reached${" ".repeat(18)}│`,
         `└${"─".repeat(52)}┘`,
         ``,
-        `  ${err.message.split(".")[0]}.`,
+        `  ${err.message.replace(/^\[notiformer\]\s*/, "").split(".")[0]}.`,
         ``,
       ];
 
-      if (isProCap) {
-        lines.push(`  Need a higher limit?`);
-        lines.push(`  → Email: support@notiformer.com`);
+      if (isDevCap) {
+        lines.push(`  Upgrade to Pro ($4.99/mo) to keep using Notiformer:`);
+        if (err.upgradeUrl) lines.push(`  → ${err.upgradeUrl}`);
+        else if (err.manageUrl) lines.push(`  → ${err.manageUrl}`);
+      } else if (isTeamCap) {
+        lines.push(`  Need a higher cap? Contact us:`);
+        lines.push(`  → support@notiformer.com`);
       } else {
-        lines.push(`  Upgrade to Pro (€4.99/mo) to keep using Notiformer:`);
-        if (err.upgradeUrl) {
-          lines.push(`  → ${err.upgradeUrl}`);
-        } else if (err.manageUrl) {
-          lines.push(`  → ${err.manageUrl}`);
-        }
+        // Pro overage cap
+        lines.push(
+          `  Upgrade to Team ($29/mo) or contact us for a higher cap:`,
+        );
+        if (err.upgradeUrl) lines.push(`  → ${err.upgradeUrl}`);
+        else lines.push(`  → support@notiformer.com`);
       }
 
       lines.push(``);

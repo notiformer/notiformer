@@ -1,14 +1,17 @@
 /**
  * SDK types — public surface for consumers of the npm package.
  *
- * The new error codes for the v2 billing model:
- *   - "card_required"        → user has no valid card on file (402)
- *   - "card_locked"          → card declined; grace period expired (402)
- *   - "cap_reached"          → hard system cap hit for this billing cycle (402)
- *   - "feature_not_available"→ feature requires Pro plan (403)
+ * Billing error codes returned as HTTP 402/403:
+ *   - "card_required"         → user has no valid card on file
+ *   - "card_locked"           → card declined; grace period expired
+ *   - "cap_reached"           → quota exhausted (Dev) or overage safety cap
+ *                               reached (Pro/Team) for this billing cycle
+ *   - "feature_not_available" → feature requires Pro or Team plan
  *
- * The old "quota_exceeded" code is gone — there is no monthly event limit
- * anymore, only a credit allowance + cap.
+ * On "cap_reached", the error object includes:
+ *   - cycleResetsAt  → ISO date when the cycle resets
+ *   - upgradeUrl     → Stripe Checkout URL to upgrade (Dev → Pro or Pro → Team)
+ *   - manageUrl      → Notiformer billing settings URL
  */
 
 export interface NotiformerConfig {
@@ -33,7 +36,7 @@ export interface EventPayload {
   notify?: boolean;
   /**
    * Specific email addresses to notify.
-   * Plan limits: Dev=1, Pro=10.
+   * Plan limits: Dev=1, Pro=1, Team=3.
    */
   recipients?: string[];
 }
@@ -69,7 +72,7 @@ export interface AskPayload {
   message: string;
   context?: string;
   details?: string;
-  /** Seconds. Max depends on plan: Dev=300, Pro=900. */
+  /** Seconds. Max depends on plan: Dev=300s (5 min), Pro/Team=900s (15 min). */
   timeout?: number;
   fallback?: "deny" | "approve";
 }
