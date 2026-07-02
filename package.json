@@ -1,6 +1,6 @@
 {
   "name": "notiformer",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Human-in-the-loop approval gates and real-time push notifications for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

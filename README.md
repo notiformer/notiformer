@@ -1,17 +1,33 @@
 # notiformer
 
-Real-time push notifications, approval gates, and feature flags for your code.
+Real-time push notifications, approval gates, and feature flags for your AI agents and backend code.
 
-Pause your AI agent, ask your phone, and continue — or fire a one-line alert the moment something important happens.
+Pause your agent, ask your phone, continue — or fire a one-line alert the moment something important happens.
 
-> **Works everywhere.** Node.js, Express, Next.js, serverless functions, Python, Go, or any HTTP client.
+> **Works everywhere.** Node.js 18+, Next.js, Express, serverless, and any HTTP client.
 
 ---
 
-## Install
+## Get started
+
+**1. Create a free account at [app.notiformer.com](https://app.notiformer.com)**
+
+- No credit card required for the Dev (free) plan
+- **You must verify your email address** before you can create projects or use the API. Check your inbox right after sign-up.
+
+**2. Install the package**
 
 ```bash
 npm install notiformer
+pnpm add notiformer
+```
+
+**3. Create a project and copy your API key**
+
+Dashboard → choose your plan → create a project → copy the API key.
+
+```bash
+ntf_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ---
@@ -21,42 +37,35 @@ npm install notiformer
 ```ts
 import { Notiformer } from "notiformer";
 
-const n = new Notiformer({
-  apiKey: "ntf_live_...", // from app.notiformer.com/projects
-});
+const n = new Notiformer({ apiKey: "ntf_live_..." });
 
-// 🛑 Block and wait for approval
-const { approved } = await n.ask({
-  message: `Deploy v2 to production?`,
-  context: "Build #442 · 3 services affected",
-  timeout: 300,
-});
-if (approved) await deploy();
-
-// 🔀 Block and wait for a choice from multiple options
-const { selected } = await n.select({
-  message: "How to handle the failed payment?",
-  options: [
-    { value: "retry", label: "🔄 Retry in 1 hour" },
-    { value: "notify", label: "📧 Notify the customer" },
-    { value: "cancel", label: "✕ Cancel the order", isDestructive: true },
-  ],
-  fallback: "notify",
-  timeout: 300,
-});
-if (selected === "retry") await scheduleRetry();
+// 🛑 Pause and wait for Approve / Deny — ALWAYS set fallback or handle the throw
+try {
+  const { approved, timedOut } = await n.ask({
+    message: "Deploy v2 to production?",
+    context: "Build #442 · 3 services affected",
+    timeout: 300,
+    fallback: "deny", // ← what to do if nobody responds in time
+    //   omit this and a timeout throws NotiformerError
+  });
+  if (approved) await deploy();
+  else console.log(timedOut ? "Timed out — auto-denied" : "Denied");
+} catch (err) {
+  if (err.code === "timeout") {
+    // Nobody responded and no fallback was set — handle explicitly
+    console.error("No response. Respond via the app, Telegram, or Slack.");
+  }
+}
 
 // 🔔 Fire-and-forget alert
 await n.event({
-  channel: "payments",
-  event: "payment_success",
-  description: "$49.00 — john@example.com",
-  icon: "💳",
-  value: "$49.00",
-  notify: true,
+  channel: "deployments",
+  event: "deploy_complete",
+  description: "v2 deployed to production",
+  icon: "🚀",
 });
 
-// 🚦 Feature gate check (cached 30s)
+// 🚦 Feature flag check
 if (await n.gate("new-checkout-flow")) {
   return newCheckout(req);
 }
@@ -66,28 +75,21 @@ if (await n.gate("new-checkout-flow")) {
 
 ---
 
-## Get your API key
-
-1. Go to [app.notiformer.com](https://app.notiformer.com) and create a free account
-2. Create a project
-3. Copy the API key from the project overview
-
----
-
 ## Configuration
 
 ```ts
 const n = new Notiformer({
   apiKey: "ntf_live_...", // required
-  silent: false, // optional — true = no API calls (great for local dev)
-  throwOnError: false, // optional — true = throws instead of returning null
+  throwOnError: true, // default: true — throws on errors instead of returning null
+  // note: timeout with no fallback always throws, ignores this flag
+  silent: false, // optional — true = no API calls (useful in test/dev)
   onError: (err) => {
-    // optional — called on any failure
+    // optional — called on any error
     Sentry.captureException(err);
   },
 });
 
-// Silence in local development
+// Silence in local development / tests:
 const n = new Notiformer({
   apiKey: process.env.NOTIFORMER_API_KEY!,
   silent: process.env.NODE_ENV !== "production",
@@ -96,245 +98,285 @@ const n = new Notiformer({
 
 ---
 
-## `ask()` — Approval gate (binary)
+## `ask()` — Approval gate (Approve / Deny)
 
-Pause your code and wait for a **human to approve or deny** from the Notiformer app. The `Promise` resolves when you respond, or when the timeout expires.
+Pause your code and wait for a **human to approve or deny** from the Notiformer app, Telegram Bot, or Slack Bot. **This is a blocking call.**
 
-> **This is a blocking call.** Your agent stops at `await n.ask()` and waits.
+### ⚠️ Critical: timeout without a fallback throws
+
+If nobody responds in time and you did not set `fallback`, the SDK throws `NotiformerError { code: 'timeout' }` — **always**, even with `throwOnError: false`. This is intentional: silently proceeding when no human has actually decided is exactly what causes incidents like "my agent sent 300k emails because nobody had time to respond."
+
+You have two options:
+
+- Set `fallback: 'deny'` (recommended for destructive actions) for automatic safe resolution
+- Omit `fallback` and handle the thrown error explicitly in a `try/catch`
 
 ```ts
-const { approved, timedOut, respondedAt } = await n.ask({
-  message: "Send campaign to 3,241 users?", // required — shown as notification title
-  context: "Campaign: Black Friday · segment A", // optional — shown in notification body
-  details: "Full changelog:\n• Fix auth bug", // optional — shown in app detail screen, supports \n
-  timeout: 300, // optional — seconds to wait (default: 300)
-  fallback: "deny", // optional — 'deny' | 'approve' on timeout (default: 'deny')
+// ✅ Option A — safe automatic fallback
+const { approved, timedOut } = await n.ask({
+  message: "Send Black Friday campaign to 3,241 users?",
+  context: "Campaign ID: bf-2025 · segment A",
+  details: "Subject: Black Friday Sale\nEstimated revenue: $48,000",
+  timeout: 300, // seconds to wait (default: 300)
+  fallback: "deny", // auto-deny on timeout — SAFE for destructive actions
 });
 
-if (approved) {
-  await sendEmails();
-} else {
-  console.log(timedOut ? "Timed out" : "Denied");
+if (approved) await sendEmails();
+else console.log(timedOut ? "Auto-denied (timed out)" : "Denied by human");
+
+// ✅ Option B — explicit error handling, no silent defaults
+try {
+  const { approved } = await n.ask({
+    message: "Delete 50,000 rows from production?",
+    timeout: 120,
+    // no fallback — throws if nobody responds
+  });
+  if (approved) await db.execute(deleteQuery);
+} catch (err) {
+  if (err.code === "timeout") {
+    // Nobody responded — abort and alert.
+    // You can respond via: Notiformer App · Telegram Bot · Slack Bot
+    await alertTeam("Approval timed out — action aborted");
+  }
+  throw err;
 }
+
+// ❌ WRONG — missing fallback, no try/catch: throws on timeout, crashes silently
+const { approved } = await n.ask({ message: "Send emails?" });
+if (approved) await sendEmails(); // ← never reached if it throws
 ```
+
+### Parameters
+
+| Parameter  | Type                | Default | Description                                                                                                            |
+| ---------- | ------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `message`  | `string`            | —       | **Required.** Question shown as the notification title.                                                                |
+| `fallback` | `'deny'\|'approve'` | none    | What to do automatically when `timeout` expires. **If omitted, timeout throws `NotiformerError { code: 'timeout' }`**. |
+| `timeout`  | `number`            | `300`   | Seconds to wait. Max: Dev 300s · Pro/Business 900s.                                                                    |
+| `context`  | `string`            | —       | Optional detail shown in the notification body. Max 500 chars.                                                         |
+| `details`  | `string`            | —       | Optional long-form text shown in the app. Supports `\n`. Max 10,000 chars.                                             |
 
 ### Return value
 
-| Field         | Type             | Description                                           |
-| ------------- | ---------------- | ----------------------------------------------------- |
-| `approved`    | `boolean`        | `true` if the user tapped Approve                     |
-| `timedOut`    | `boolean`        | `true` if nobody responded before the timeout         |
-| `respondedAt` | `string \| null` | ISO timestamp of the response, or `null` if timed out |
+| Field         | Type             | Description                                                            |
+| ------------- | ---------------- | ---------------------------------------------------------------------- |
+| `approved`    | `boolean`        | `true` if human approved, or `fallback: 'approve'` was used on timeout |
+| `timedOut`    | `boolean`        | `true` if nobody responded before the timeout expired                  |
+| `respondedAt` | `string \| null` | ISO timestamp of the human response, or `null` if timed out            |
 
-### Plan limits
-
-| Plan     | Gates/month       | Max timeout |
-| -------- | ----------------- | ----------- |
-| Free     | — (not available) | —           |
-| Starter  | 200               | 5 min       |
-| Pro      | 2,000             | 15 min      |
-| Business | 20,000            | 60 min      |
+Or throws `NotiformerError { code: 'timeout' }` if no fallback was set and nobody responded.
 
 ---
 
-## `select()` — Approval gate (multi-option)
+## `select()` — Multi-option gate
 
-Like `ask()`, but instead of Approve/Deny the user picks from **2–6 custom options**. Returns the `value` string of the chosen option.
+Like `ask()`, but the user picks from **2–6 custom options** instead of Approve/Deny. **Same timeout behavior**: omitting `fallback` throws on timeout.
 
 Uses the same monthly quota as `ask()`.
 
 ```ts
-const { selected, timedOut, respondedAt } = await n.select({
-  message: "How should the agent handle the error?", // required
-  options: [
-    // required — min 2, max 6
-    { value: "retry", label: "🔄 Retry the request" },
-    { value: "skip", label: "⏭ Skip and continue" },
-    { value: "stop", label: "🛑 Stop the pipeline", isDestructive: true },
-  ],
-  context: "Step 4/10 failed — HTTP 503 from payments API", // optional
-  details: "Error: Connection timeout\nEndpoint: /v2/charge\nRetries: 3",
-  timeout: 300, // optional — seconds (default: 300)
-  fallback: "skip", // optional — value to return on timeout (must match an option)
-});
+// ✅ With fallback — safe automatic resolution
+try {
+  const { selected, timedOut } = await n.select({
+    message: "How should the agent handle the error?",
+    options: [
+      // required — min 2, max 6
+      { value: "retry", label: "🔄 Retry the request" },
+      { value: "skip", label: "⏭ Skip and continue" },
+      { value: "stop", label: "🛑 Stop the pipeline", isDestructive: true },
+    ],
+    context: "Step 4/10 failed — HTTP 503",
+    timeout: 300,
+    fallback: "stop", // ← if nobody responds, stop (safe for pipelines)
+    //   omit → throws NotiformerError { code: 'timeout' }
+  });
 
-if (selected === "retry") await retryStep();
-if (selected === "skip") await nextStep();
-if (selected === "stop") await abort();
-```
-
-### Return value
-
-| Field         | Type             | Description                                                                                      |
-| ------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
-| `selected`    | `string \| null` | The value of the chosen option, or the fallback on timeout. `null` if timed out with no fallback |
-| `timedOut`    | `boolean`        | `true` if nobody responded in time                                                               |
-| `respondedAt` | `string \| null` | ISO timestamp of the response                                                                    |
-
-### Option shape
-
-```ts
-interface SelectOption {
-  value: string; // returned in result.selected — max 50 chars
-  label: string; // button text in the app — max 80 chars, supports emoji
-  isDestructive?: boolean; // if true, button is styled in red
+  if (selected === "retry") await retryStep();
+  if (selected === "skip") await nextStep();
+  if (selected === "stop") await abort();
+} catch (err) {
+  if (err.code === "timeout") {
+    // No response and no fallback was set — stop safely
+    await abort();
+  }
 }
 ```
 
-### Validation rules (enforced at call time)
+### Parameters
 
-- At least 2 options, maximum 6
-- `fallback` must match one of the option `value` strings exactly
-- Each `value` max 50 chars, each `label` max 80 chars
+| Parameter  | Type             | Default | Description                                                                                                   |
+| ---------- | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
+| `message`  | `string`         | —       | **Required.** Question shown as the notification title.                                                       |
+| `options`  | `SelectOption[]` | —       | **Required.** Min 2, max 6. Each option: `value` (returned), `label` (button text), optional `isDestructive`. |
+| `fallback` | `string`         | none    | Option value to use on timeout. Must exactly match one of the option values. **If omitted, timeout throws.**  |
+| `timeout`  | `number`         | `300`   | Seconds to wait. Same plan limits as `ask()`.                                                                 |
+| `context`  | `string`         | —       | Optional notification body text. Max 500 chars.                                                               |
+| `details`  | `string`         | —       | Optional long-form text shown in the app. Max 10,000 chars.                                                   |
+
+### Return value
+
+| Field         | Type             | Description                                                  |
+| ------------- | ---------------- | ------------------------------------------------------------ |
+| `selected`    | `string \| null` | Value of chosen option, or the `fallback` value if timed out |
+| `timedOut`    | `boolean`        | `true` if nobody responded in time                           |
+| `respondedAt` | `string \| null` | ISO timestamp, or `null` if timed out                        |
+
+Or throws `NotiformerError { code: 'timeout' }` if no fallback was set and nobody responded.
 
 ---
 
 ## `event()` — Fire-and-forget alert
 
-Send an event notification. Never throws by default.
+Send a push notification. Your code continues immediately — no waiting.
 
 ```ts
 await n.event({
   channel: "payments", // required — auto-created on first use
   event: "payment_success", // required — machine-readable event name
-  description: "$49.00 — john@co.com", // optional — shown in notification + feed
-  icon: "💳", // optional — emoji
-  tags: { plan: "pro" }, // optional — metadata shown in feed
-  value: "$49.00", // optional — highlighted value in feed
-  notify: true, // optional — true = push notification (default)
-  recipients: ["you@company.com"], // optional — notify specific people only
+  description: "$49.00 — john@co.com",
+  icon: "💳",
+  tags: { plan: "pro", userId: "usr_42" },
+  value: "$49.00", // highlighted in the feed
+  notify: true, // default true — false = store silently
+  recipients: ["cto@company.com"], // optional — notify specific people only
 });
 ```
 
-### `notify` behaviour
+`event()` never throws by default regardless of `throwOnError`. A failed notification will never crash your app.
 
-| Value            | Behaviour                                   |
-| ---------------- | ------------------------------------------- |
-| `true` (default) | Sends push to subscribed members            |
-| `false`          | Stores the event silently — no notification |
+### Monthly quotas
 
-### Return value
+| Plan     | Included / cycle | Overage         |
+| -------- | ---------------- | --------------- |
+| Dev      | 500 (hard stop)  | none            |
+| Pro      | 5,000            | $0.0005 / event |
+| Business | 50,000           | $0.0003 / event |
+| Custom   | Negotiated       | Negotiated      |
 
-```ts
-const result = await n.event({ ... });
-// result is null if the call failed (never throws by default)
-// result.id          → event ID
-// result.createdAt   → ISO timestamp
-// result.rateLimited → true if >60 events/min (event stored, notification skipped)
-```
-
-### Recipients
-
-By default, all project members subscribed to the channel are notified. Use `recipients` to target specific people:
-
-```ts
-await n.event({
-  channel: "sales",
-  event: "enterprise_signup",
-  notify: true,
-  recipients: ["cto@company.com"], // only this person gets the push
-});
-```
-
-| Plan     | Max recipients per event |
-| -------- | ------------------------ |
-| Free     | 1                        |
-| Starter  | 3                        |
-| Pro      | 10                       |
-| Business | 30                       |
-
-### Monthly event quotas
-
-| Plan     | Events/month |
-| -------- | ------------ |
-| Free     | 500          |
-| Starter  | 20,000       |
-| Pro      | 75,000       |
-| Business | 300,000      |
-
-Rate limit: 60 events/minute per project. If exceeded, the event is stored but no notification is sent (`rateLimited: true` in the response).
+Rate limit: 60 events/minute per project (`rateLimited: true` in response if exceeded).
 
 ---
 
 ## `gate()` — Feature flags
 
-Toggle features remotely from the dashboard — no redeploy needed. Results are **cached locally for 30 seconds** by default.
+Toggle features remotely from the dashboard — no redeploy needed. Always reads fresh from the server; the SDK has an optional local in-memory cache only.
 
 > Available on **Pro and Business** plans only.
 
 ```ts
 const isEnabled = await n.gate("new-checkout-flow");
+if (isEnabled) return newCheckout(req);
 
-if (isEnabled) {
-  return newCheckout(req);
-} else {
-  return legacyCheckout(req);
-}
-```
-
-### Options
-
-```ts
+// With options:
 const isEnabled = await n.gate("my-gate", {
   fallback: false, // returned if the gate can't be fetched (default: false)
-  cacheTtl: 0, // local cache in seconds (default: 0)
+  cacheTtl: 60, // local in-memory cache in seconds (default: 0 — always fresh)
 });
 
-// Full result with metadata
+// Full details:
 const result = await n.gateDetails("my-gate");
-// { key: 'my-gate', enabled: true, cached: false, fetchedAt: '...' }
+// { key: 'my-gate', enabled: true, cached: false }
 
-// Cache management
-n.clearGateCache("my-gate"); // clear one gate
-n.clearGateCache(); // clear all gates
+// Clear local cache:
+n.clearGateCache("my-gate");
+n.clearGateCache();
 ```
-
-| Plan     | Gate limit per project |
-| -------- | ---------------------- |
-| Free     | Not available          |
-| Starter  | Not available          |
-| Pro      | 50 gates               |
-| Business | 500 gates              |
 
 ---
 
-## When quota is exceeded
-
-When you hit your monthly limit, the API returns HTTP 429 with an `upgradeUrl` field pointing to a direct Stripe Checkout for the next plan:
+## Error handling
 
 ```ts
-// The SDK logs this automatically:
-// [notiformer] Plan limit reached. Upgrade your plan to continue:
-// → https://api.notiformer.com/v1/upgrade?plan=pro&uid=...&email=...
+import { NotiformerError } from "notiformer";
 
-// You can also handle it yourself:
-const n = new Notiformer({
-  apiKey: "ntf_live_...",
-  onError: (err) => {
-    if (err.message.includes("quota")) {
-      notifyAdmin("Notiformer quota exceeded");
+const n = new Notiformer({ apiKey: "ntf_live_...", throwOnError: true });
+
+try {
+  const { approved } = await n.ask({
+    message: "Delete records?",
+    timeout: 120,
+    // no fallback → throws if nobody responds
+  });
+  if (approved) await deleteRecords();
+} catch (err) {
+  if (err instanceof NotiformerError) {
+    switch (err.code) {
+      case "timeout":
+        // Nobody responded in time, no fallback was configured.
+        // Respond via: Notiformer App · Telegram Bot · Slack Bot
+        console.error("No response — action aborted.");
+        break;
+      case "cap_reached":
+        // Monthly quota exhausted. Resets at err.cycleResetsAt.
+        console.error("Quota reached. Resets:", err.cycleResetsAt);
+        break;
+      case "card_required":
+      case "card_locked":
+        // Pro/Business only — Dev plan never receives this.
+        console.error("Payment issue:", err.manageUrl);
+        break;
+      case "network":
+        console.error("Network error — check your connection.");
+        break;
     }
-  },
-});
+  }
+}
 ```
+
+### Error codes
+
+| Code                    | HTTP | When                                                                   |
+| ----------------------- | ---- | ---------------------------------------------------------------------- |
+| `timeout`               | 408  | `ask()`/`select()` timed out with no fallback set and nobody responded |
+| `cap_reached`           | 402  | Dev hard quota or Pro/Business overage safety cap reached this cycle   |
+| `card_required`         | 402  | Pro/Business: no payment method on file (Dev plan never receives this) |
+| `card_locked`           | 402  | Pro/Business: card declined and grace period expired                   |
+| `feature_not_available` | 403  | Feature requires a higher plan                                         |
+| `invalid_api_key`       | 401  | Missing or invalid API key                                             |
+| `rate_limited`          | 429  | Event rate limit (60/min per project)                                  |
+| `network`               | —    | Cannot reach the API                                                   |
+
+---
+
+## Plans & quotas
+
+| Feature                  | Dev         | Pro          | Business       | Custom     |
+| ------------------------ | ----------- | ------------ | -------------- | ---------- |
+| **Price**                | Free        | $4.99 / mo   | $29.99 / mo    | Contact us |
+| **Credit card required** | ✗ No        | ✓ Yes        | ✓ Yes          | ✓ Yes      |
+| **ask() + select()**     | 15 / cycle  | 100 incl.    | 1,500 incl.    | Custom     |
+| **ask() overage**        | Hard stop   | $0.03 / call | $0.02 / call   | —          |
+| **event()**              | 500 / cycle | 5,000 incl.  | 50,000 incl.   | Custom     |
+| **event() overage**      | Hard stop   | $0.0005 / ev | $0.0003 / ev   | —          |
+| **Email via relay**      | —           | 150 incl.    | 2,500 incl.    | Custom     |
+| **Feature gates**        | 2           | 5            | 30             | Unlimited  |
+| **Projects**             | 1           | 2            | 3              | Unlimited  |
+| **Team members**         | Owner only  | Owner only   | 3 per project  | Custom     |
+| **Push devices / user**  | 2           | 3            | 5              | Unlimited  |
+| **Max ask() timeout**    | 5 min       | 15 min       | 15 min         | 60 min     |
+| **Overage safety cap**   | —           | $500 / cycle | $2,000 / cycle | —          |
+
+> **Email verification required** on all plans. You must verify your email address before creating projects or using the API.
 
 ---
 
 ## REST API
 
-All SDK methods wrap REST endpoints. Use them from any language:
+All SDK methods wrap REST endpoints. Use them from Python, Go, Ruby, curl, or any HTTP client:
 
 ```
-POST   https://api.notiformer.com/v1/events       — n.event()
-POST   https://api.notiformer.com/v1/ask          — n.ask() create
-GET    https://api.notiformer.com/v1/ask/:id      — n.ask() poll
-POST   https://api.notiformer.com/v1/select       — n.select() create
-GET    https://api.notiformer.com/v1/select/:id   — n.select() poll
-GET    https://api.notiformer.com/v1/gates/:key   — n.gate()
-GET    https://api.notiformer.com/v1/health       — status check
+POST  https://api.notiformer.com/v1/events       — n.event()
+POST  https://api.notiformer.com/v1/ask          — n.ask() create
+GET   https://api.notiformer.com/v1/ask/:id      — n.ask() poll
+POST  https://api.notiformer.com/v1/select       — n.select() create
+GET   https://api.notiformer.com/v1/select/:id   — n.select() poll
+GET   https://api.notiformer.com/v1/gates/:key   — n.gate()
+GET   https://api.notiformer.com/v1/health       — status check
 ```
 
 All endpoints require `Authorization: Bearer ntf_live_...`.
+
+**Important for polling ask/select:** if `GET /v1/ask/:id` returns `HTTP 408` with `{ "code": "timeout" }`, it means the request expired with no fallback configured — treat this as an error, not a normal resolution.
 
 ### Python example
 
@@ -344,11 +386,11 @@ import requests, time
 NF_KEY  = "ntf_live_..."
 HEADERS = {"Authorization": f"Bearer {NF_KEY}"}
 
-# Create an approval request
+# Create an approval request (with fallback for safety)
 r = requests.post(
     "https://api.notiformer.com/v1/ask",
     headers=HEADERS,
-    json={"message": "Delete 500 rows?", "timeout": 300}
+    json={"message": "Delete 500 rows?", "timeout": 300, "fallback": "deny"}
 )
 ask_id = r.json()["id"]
 
@@ -358,35 +400,44 @@ while True:
         f"https://api.notiformer.com/v1/ask/{ask_id}",
         headers=HEADERS
     ).json()
+
+    # Handle ambiguous timeout (no fallback was set)
+    if poll.get("code") == "timeout":
+        raise RuntimeError("No response — set a fallback or ensure you can respond in time")
+
     if poll["status"] != "pending":
         break
     time.sleep(2)
 
 if poll["status"] == "approved":
     db.execute(delete_query)
+else:
+    print("Cancelled:", poll["status"])
 ```
 
 ---
 
 ## Common patterns
 
-### AI agent guard
+### Safe destructive action
 
 ```ts
-// Stop the agent before any destructive action
-const { approved } = await n.ask({
-  message: `Agent wants to delete ${count} records`,
-  context: `Table: ${table} · Environment: production`,
-  details: `WHERE clause: ${query}\nEstimated rows: ${count}`,
+// Always set fallback: 'deny' for anything destructive
+const { approved, timedOut } = await n.ask({
+  message: `Delete ${count} rows from ${table}?`,
+  context: `WHERE: ${condition} · Environment: production`,
+  details: `Estimated rows: ${count}\nQuery preview: ${query}`,
   timeout: 120,
-  fallback: "deny",
+  fallback: "deny", // safe — auto-deny if nobody responds
 });
-if (!approved) throw new Error("Action denied by human");
+if (!approved) throw new Error(timedOut ? "Timed out — auto-denied" : "Denied");
+await db.execute(query);
 ```
 
-### Multi-step decision
+### Multi-branch agent decision
 
 ```ts
+// Always set fallback to the safest option
 const { selected } = await n.select({
   message: `Build #${build.id} failed at step ${step}`,
   options: [
@@ -394,7 +445,7 @@ const { selected } = await n.select({
     { value: "restart", label: "↩ Restart from scratch" },
     { value: "abort", label: "🛑 Abort pipeline", isDestructive: true },
   ],
-  fallback: "abort",
+  fallback: "abort", // safe — abort if nobody decides
   timeout: 600,
 });
 ```
@@ -406,11 +457,11 @@ await n.event({
   channel: "analytics",
   event: "page_view",
   tags: { path: req.path, userId: session.userId },
-  notify: false, // stored in feed, no push
+  notify: false, // stored in feed, no push notification
 });
 ```
 
-### Error alert with context
+### Error alert
 
 ```ts
 app.use(async (err, req, res, next) => {
@@ -419,7 +470,7 @@ app.use(async (err, req, res, next) => {
     event: "unhandled_error",
     description: err.message,
     icon: "🔴",
-    tags: { path: req.path, method: req.method, status: 500 },
+    tags: { path: req.path, method: req.method },
     notify: true,
   });
   res.status(500).json({ error: "Internal server error" });
@@ -439,6 +490,6 @@ app.use(async (err, req, res, next) => {
 
 - **Dashboard:** [app.notiformer.com](https://app.notiformer.com)
 - **Docs:** [docs.notiformer.com](https://docs.notiformer.com)
-- **Status:** [status.notiformer.com](https://status.notiformer.com)
 - **Pricing:** [notiformer.com/#pricing](https://notiformer.com/#pricing)
 - **npm:** [npmjs.com/package/notiformer](https://www.npmjs.com/package/notiformer)
+- **Support:** [hello@notiformer.com](mailto:hello@notiformer.com)

@@ -209,6 +209,16 @@ export class Notiformer {
 
   // ─────────────────────────────────────────────────────────────
   // ask()
+  //
+  // ⚠️  TIMEOUT WITHOUT FALLBACK THROWS
+  //     If nobody responds before `timeout` seconds and no `fallback`
+  //     was set, ask() throws NotiformerError { code: 'timeout' }.
+  //     This is unconditional — it ignores throwOnError: false.
+  //
+  //     Set fallback: 'deny' for automatic safe resolution, or wrap in
+  //     try/catch and handle the throw explicitly.
+  //
+  //     The user can respond via: Notiformer App · Telegram Bot · Slack Bot
   // ─────────────────────────────────────────────────────────────
 
   async ask(payload: AskPayload): Promise<AskResult> {
@@ -255,6 +265,14 @@ export class Notiformer {
 
   // ─────────────────────────────────────────────────────────────
   // select()
+  //
+  // ⚠️  TIMEOUT WITHOUT FALLBACK THROWS
+  //     If nobody responds before `timeout` seconds and no `fallback`
+  //     was set, select() throws NotiformerError { code: 'timeout' }.
+  //     Same rule as ask() — unconditional, ignores throwOnError: false.
+  //
+  //     Set fallback to one of your option values for automatic resolution,
+  //     or wrap in try/catch and handle the throw explicitly.
   // ─────────────────────────────────────────────────────────────
 
   async select(payload: SelectPayload): Promise<SelectResult> {
