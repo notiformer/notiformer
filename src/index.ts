@@ -1,19 +1,19 @@
 /**
  * Notiformer — Real-time alerts, approval gates, and feature flags.
  *
- * Pricing model (v2):
- *   Each plan includes a free credit allowance per billing cycle.
- *   Once the allowance is consumed, usage continues at fixed per-unit prices
- *   (pay-as-you-go), capped at a hard system limit per cycle.
+ * Pricing model (v3):
+ *   Dev plan: free, no credit card required. Sign up, verify your email,
+ *   and start using the API immediately. Hard quota per cycle (no overage).
+ *   Pro / Business: included quota + pay-as-you-go, capped per cycle.
  *   See https://notiformer.com/pricing for current rates.
  *
- * Billing errors (HTTP 402):
+ * Billing errors (HTTP 402 — Pro/Business only):
  *   - "card_required"   → add a payment method at app.notiformer.com
  *   - "card_locked"     → card declined; update payment method
- *   - "cap_reached"     → hard cycle cap reached; usage resets at cycleResetsAt
+ *   - "cap_reached"     → hard cycle cap (Dev) or overage safety cap reached
  *
- * The SDK never throws by default. To opt in:
- *   new Notiformer({ apiKey, throwOnError: true })
+ * The SDK throws by default (throwOnError: true). To opt out:
+ *   new Notiformer({ apiKey, throwOnError: false })
  */
 
 import type {
@@ -50,8 +50,22 @@ export { NotiformerError } from "./types";
 const PLACEHOLDER_KEY = "ntf_live_test";
 const API_URL = "https://api.notiformer.com";
 const DEFAULT_TIMEOUT = 8_000;
-const DEFAULT_GATE_TTL = 30;
-const SDK_VERSION = "2.2.0";
+const DEFAULT_GATE_TTL = 0; // 30
+const SDK_VERSION = "3.1.0";
+
+/**
+ * Shown when an ask()/select() times out with no `fallback` configured.
+ * Kept in sync with the backend's NO_RESPONSE_CHANNELS_MESSAGE
+ * (services/ask-resolution.ts) — same wording, separate copy because this
+ * package ships independently from the backend.
+ */
+const NO_RESPONSE_TIMEOUT_MESSAGE =
+  "No one responded in time, and no fallback was configured, so this " +
+  "request cannot be resolved automatically. Set a `fallback` " +
+  "('approve' or 'deny') to handle unanswered requests safely, or make " +
+  "sure someone can respond before the timeout via one of your active " +
+  "channels: the Notiformer Mobile App, the Notiformer Telegram Bot, the " +
+  "Notiformer Slack Bot, or email.";
 
 interface ApiErrorBody {
   error?: string;
@@ -84,7 +98,7 @@ export class Notiformer {
     this.baseUrl = (config._baseUrl ?? API_URL).replace(/\/$/, "");
     this.timeout = DEFAULT_TIMEOUT;
     this.silent = config.silent ?? false;
-    this.throwOnError = config.throwOnError ?? false;
+    this.throwOnError = config.throwOnError ?? true;
     this.onError = config.onError;
     this.logger = new Logger("warn");
     this.gateCache = new GateCache();
@@ -211,8 +225,8 @@ export class Notiformer {
     const body: Record<string, unknown> = {
       message: payload.message,
       timeout: payload.timeout ?? 300,
-      fallback: payload.fallback ?? "deny",
     };
+    if (payload.fallback !== undefined) body.fallback = payload.fallback;
     if (payload.context !== undefined) body.context = payload.context;
     if (payload.details !== undefined) body.details = payload.details;
 
@@ -232,7 +246,11 @@ export class Notiformer {
       status: string;
       expiresAt: string;
     };
-    return this.pollAsk(created.id, new Date(created.expiresAt).getTime());
+    return this.pollAsk(
+      created.id,
+      new Date(created.expiresAt).getTime(),
+      payload.fallback,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -294,7 +312,11 @@ export class Notiformer {
       status: string;
       expiresAt: string;
     };
-    return this.pollSelect(created.id, new Date(created.expiresAt).getTime());
+    return this.pollSelect(
+      created.id,
+      new Date(created.expiresAt).getTime(),
+      payload.fallback,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -304,6 +326,7 @@ export class Notiformer {
   private async pollAsk(
     askId: string,
     expiresAtMs: number,
+    requestedFallback?: "deny" | "approve",
   ): Promise<AskResult> {
     const POLL_MS = 2_000;
     const GRACE_MS = 5_000;
@@ -314,11 +337,14 @@ export class Notiformer {
         if (res.ok) {
           const data = (await res.json()) as {
             status: string;
+            fallbackApplied?: "deny" | "approve";
             respondedAt: string | null;
           };
           if (data.status !== "pending") {
             return {
-              approved: data.status === "approved",
+              approved:
+                data.status === "approved" ||
+                data.fallbackApplied === "approve",
               timedOut: data.status === "timed_out",
               respondedAt: data.respondedAt ?? null,
             };
@@ -331,7 +357,23 @@ export class Notiformer {
         // network blip — try again next loop
       }
       if (Date.now() >= expiresAtMs + GRACE_MS) {
-        return { approved: false, timedOut: true, respondedAt: null };
+        // We never got a clean signal from the server before our own grace
+        // window ran out. Resolve locally using the same rule the server
+        // uses: a configured fallback applies; no fallback is ambiguous and
+        // must surface as an error, not a silent guess.
+        if (requestedFallback === undefined) {
+          return this.failAsk(
+            new NotiformerError(
+              "[notiformer] " + NO_RESPONSE_TIMEOUT_MESSAGE,
+              "timeout",
+            ),
+          );
+        }
+        return {
+          approved: requestedFallback === "approve",
+          timedOut: true,
+          respondedAt: null,
+        };
       }
     }
   }
@@ -339,6 +381,7 @@ export class Notiformer {
   private async pollSelect(
     selectId: string,
     expiresAtMs: number,
+    requestedFallback?: string,
   ): Promise<SelectResult> {
     const POLL_MS = 2_000;
     const GRACE_MS = 5_000;
@@ -369,7 +412,19 @@ export class Notiformer {
         // network blip — try again
       }
       if (Date.now() >= expiresAtMs + GRACE_MS) {
-        return { selected: null, timedOut: true, respondedAt: null };
+        if (requestedFallback === undefined) {
+          return this.failSelect(
+            new NotiformerError(
+              "[notiformer] " + NO_RESPONSE_TIMEOUT_MESSAGE,
+              "timeout",
+            ),
+          );
+        }
+        return {
+          selected: requestedFallback,
+          timedOut: true,
+          respondedAt: null,
+        };
       }
     }
   }
@@ -399,6 +454,7 @@ export class Notiformer {
     if (status === 401) return "invalid_api_key";
     if (status === 402) return "card_required";
     if (status === 403) return "feature_not_available";
+    if (status === 408) return "timeout";
     if (status === 429) return "rate_limited";
     if (status >= 500) return "internal";
     return "validation";
@@ -419,7 +475,7 @@ export class Notiformer {
       const isDevCap =
         err.message.toLowerCase().includes("dev plan") ||
         err.message.toLowerCase().includes("trial credit");
-      const isTeamCap = err.message.toLowerCase().includes("team plan");
+      const isBusinessCap = err.message.toLowerCase().includes("business plan");
 
       const lines = [
         ``,
@@ -435,13 +491,13 @@ export class Notiformer {
         lines.push(`  Upgrade to Pro ($4.99/mo) to keep using Notiformer:`);
         if (err.upgradeUrl) lines.push(`  → ${err.upgradeUrl}`);
         else if (err.manageUrl) lines.push(`  → ${err.manageUrl}`);
-      } else if (isTeamCap) {
+      } else if (isBusinessCap) {
         lines.push(`  Need a higher cap? Contact us:`);
         lines.push(`  → support@notiformer.com`);
       } else {
         // Pro overage cap
         lines.push(
-          `  Upgrade to Team ($29/mo) or contact us for a higher cap:`,
+          `  Upgrade to Business ($29/mo) or contact us for a higher cap:`,
         );
         if (err.upgradeUrl) lines.push(`  → ${err.upgradeUrl}`);
         else lines.push(`  → support@notiformer.com`);
@@ -455,9 +511,12 @@ export class Notiformer {
     }
 
     if (err.code === "card_required" || err.code === "card_locked") {
+      // card_required / card_locked are only returned for Pro/Business accounts.
+      // Dev plan users never need a card, so if you're seeing this your account
+      // has been upgraded to a paid plan with a card issue.
       const action =
         err.code === "card_required"
-          ? "Add a payment method"
+          ? "Add a payment method (required for Pro/Business plans)"
           : "Update your payment method";
       const lines = [
         ``,
@@ -510,14 +569,18 @@ export class Notiformer {
   private failAsk(error: NotiformerError): AskResult {
     this.logger.error(error.message);
     this.onError?.(error);
-    if (this.throwOnError) throw error;
+    // "timeout" (no fallback configured) always throws, even if the caller
+    // set throwOnError: false — silently returning here is exactly the
+    // failure mode this is meant to prevent (code proceeding as if a
+    // decision had been made when nobody actually decided anything).
+    if (this.throwOnError || error.code === "timeout") throw error;
     return { approved: false, timedOut: false, respondedAt: null };
   }
 
   private failSelect(error: NotiformerError): SelectResult {
     this.logger.error(error.message);
     this.onError?.(error);
-    if (this.throwOnError) throw error;
+    if (this.throwOnError || error.code === "timeout") throw error;
     return { selected: null, timedOut: false, respondedAt: null };
   }
 

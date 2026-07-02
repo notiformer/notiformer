@@ -277,7 +277,7 @@ if (isEnabled) {
 ```ts
 const isEnabled = await n.gate("my-gate", {
   fallback: false, // returned if the gate can't be fetched (default: false)
-  cacheTtl: 60, // local cache in seconds (default: 30)
+  cacheTtl: 0, // local cache in seconds (default: 0)
 });
 
 // Full result with metadata

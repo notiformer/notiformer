@@ -2,15 +2,16 @@
  * SDK types — public surface for consumers of the npm package.
  *
  * Billing error codes returned as HTTP 402/403:
- *   - "card_required"         → user has no valid card on file
- *   - "card_locked"           → card declined; grace period expired
- *   - "cap_reached"           → quota exhausted (Dev) or overage safety cap
- *                               reached (Pro/Team) for this billing cycle
- *   - "feature_not_available" → feature requires Pro or Team plan
+ *   - "card_required"         → Pro/Business user has no valid card on file
+ *                               (Dev plan never receives this error)
+ *   - "card_locked"           → Pro/Business card declined; grace period expired
+ *   - "cap_reached"           → quota exhausted (Dev hard stop) or overage safety
+ *                               cap reached (Pro/Business) for this billing cycle
+ *   - "feature_not_available" → feature requires Pro or Business plan
  *
  * On "cap_reached", the error object includes:
  *   - cycleResetsAt  → ISO date when the cycle resets
- *   - upgradeUrl     → Stripe Checkout URL to upgrade (Dev → Pro or Pro → Team)
+ *   - upgradeUrl     → Stripe Checkout URL to upgrade (Dev → Pro or Pro → Business)
  *   - manageUrl      → Notiformer billing settings URL
  */
 
@@ -36,7 +37,7 @@ export interface EventPayload {
   notify?: boolean;
   /**
    * Specific email addresses to notify.
-   * Plan limits: Dev=1, Pro=1, Team=3.
+   * Plan limits: Dev=1, Pro=1, Business=3.
    */
   recipients?: string[];
 }
@@ -72,7 +73,7 @@ export interface AskPayload {
   message: string;
   context?: string;
   details?: string;
-  /** Seconds. Max depends on plan: Dev=300s (5 min), Pro/Team=900s (15 min). */
+  /** Seconds. Max depends on plan: Dev=300s (5 min), Pro/Business=900s (15 min). */
   timeout?: number;
   fallback?: "deny" | "approve";
 }
@@ -122,7 +123,8 @@ export type NotiformerErrorCode =
   | "validation"
   | "rate_limited"
   | "network"
-  | "internal";
+  | "internal"
+  | "timeout";
 
 export class NotiformerError extends Error {
   code: NotiformerErrorCode;
