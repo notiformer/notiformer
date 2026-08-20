@@ -27,17 +27,68 @@ export interface NotiformerConfig {
 // Event payload
 // ──────────────────────────────────────────────
 
+export interface EventItem {
+  name: string;
+  /** string | number | boolean | null — never send `undefined`; if you
+   *  don't have a value yet, pass `null` explicitly. */
+  value: string | number | boolean | null;
+  /** Optional URL. Bare domains ("example.com") and "www."-prefixed
+   *  values are automatically upgraded to a full "https://" URL server-side.
+   *  Rendered as a clickable button in-app, in Slack, and in Telegram. */
+  link?: string;
+}
+
 export interface EventPayload {
   channel: string;
   event: string;
   description?: string;
   icon?: string;
-  tags?: Record<string, string | number | boolean>;
+  /**
+   * Simple string labels, e.g. ["urgent", "beta-user"].
+   * Limits: max 10 tags, 50 characters each. Extra tags or characters
+   * beyond that are silently dropped/truncated — never an error.
+   */
+  tags?: string[];
+  /**
+   * Structured name/value/link entries — use this instead of (or
+   * alongside) `description` when you have several discrete pieces of
+   * information to show, rather than one paragraph of text. Renders as
+   * fields in the app, Slack, and Telegram; any entry with a `link`
+   * also renders as a clickable button.
+   *
+   * Rules:
+   * - `name` is required. An entry with a missing/blank name is
+   *   silently skipped — it will not appear, and the rest of your
+   *   request still succeeds (no error).
+   * - `value` accepts a string, number, boolean, or `null`. Never omit
+   *   it as `undefined` — pass `null` explicitly if you have nothing to
+   *   show for that entry.
+   * - `link` is optional. Bare domains and "www." links are normalized
+   *   to a full "https://" URL automatically.
+   *
+   * Limits: max 10 items; name max 60 characters; string values max
+   * 200 characters; links max 500 characters. Anything beyond that is
+   * truncated/dropped, never an error.
+   *
+   * Example — order notification with a link to the invoice:
+   *   items: [
+   *     { name: "Order #", value: "8842" },
+   *     { name: "Customer", value: "jane@example.com" },
+   *     { name: "Total", value: "$129.00" },
+   *     { name: "Invoice", value: null, link: "billing.example.com/inv/8842" },
+   *   ]
+   *
+   * This is a good field to point an AI agent at when it has a
+   * variable-length list of facts to report (line items, request
+   * parameters, changed fields, related links) rather than trying to
+   * cram everything into `description`.
+   */
+  items?: EventItem[];
   value?: string | number;
   notify?: boolean;
   /**
    * Specific email addresses to notify.
-   * Plan limits: Dev=1, Pro=1, Business=3.
+   * Plan limits: Dev=1, Pro=1, Business=3, Custom=unlimited.
    */
   recipients?: string[];
 }
@@ -51,7 +102,8 @@ export interface EventResponse {
 }
 
 // ──────────────────────────────────────────────
-// Gate (feature flag — Pro plan only)
+// Gate (feature flag — available on every plan)
+// Active-gate cap per plan: Dev=2, Pro=5, Business=30, Custom=unlimited.
 // ──────────────────────────────────────────────
 
 export interface GateOptions {

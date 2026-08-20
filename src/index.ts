@@ -148,6 +148,7 @@ export class Notiformer {
         body.description = payload.description;
       if (payload.icon !== undefined) body.icon = payload.icon;
       if (payload.tags !== undefined) body.tags = payload.tags;
+      if (payload.items !== undefined) body.items = payload.items;
       if (payload.value !== undefined) body.value = payload.value;
       if (payload.recipients !== undefined && payload.recipients.length > 0) {
         body.recipients = payload.recipients;

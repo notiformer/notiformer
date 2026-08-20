@@ -18,81 +18,294 @@ Pause your agent, ask your phone, continue — or fire a one-line alert the mome
 **2. Install the package**
 
 ```bash
-npm install notiformer
-pnpm add notiformer
+npm install notiformer@latest
 ```
+
+Prefer pnpm or yarn? Use `pnpm add notiformer@latest` or `yarn add notiformer@latest` instead — you only need one of these, not all three.
 
 **3. Create a project and copy your API key**
 
-Dashboard → choose your plan → create a project → copy the API key.
+Dashboard (app.notiformer.com) → Projects → Create a Project → Copy the API key.
 
-```bash
+```
 ntf_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
+
+Every project's default key is **private** (`ntf_live_...`), meant for
+server-side code — full access to all four methods. If you need to call
+Notiformer directly from a browser or other public client, create a
+**public** key instead — see **API keys: public vs private** below before you do.
+
+---
+
+## API keys: public vs private
+
+<details>
+<summary><strong>Click to expand — key scopes, domain behavior, rate limits, and kill switch</strong></summary>
+
+You choose a key's scope **once, at creation** — it can never be widened
+afterward (only narrowed, e.g. adding a domain restriction, or disabled
+entirely). For broader access, create a new key.
+
+|                      | `ntf_live_...` (private)                                             | `ntf_pub_...` (public)               |
+| -------------------- | -------------------------------------------------------------------- | ------------------------------------ |
+| Use in               | server / backend code                                                | browser, public JS/HTML on your site |
+| Can call             | `event()`, `ask()`, `select()`, `gate()`                             | **`event()` only**                   |
+| Shown in dashboard   | full value once, at creation only — masked (last 4 chars) after that | always shown in full                 |
+| Scope after creation | fixed — never widened                                                | fixed — never widened                |
+
+This is enforced **server-side on every request**, not just hidden in the
+dashboard UI — a public key calling `ask()`, `select()`, or `gate()` gets
+`403 Forbidden`, regardless of what's calling it (this SDK, a raw GET URL,
+anything).
+
+Existing `ntf_live_...` keys are unaffected by any of this — same full
+access as always, nothing to migrate.
+
+### Using a public key safely in client-side code
+
+```html
+<script>
+  fetch("https://api.notiformer.com/v1/events", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer ntf_pub_...", // safe to expose — this key can only call event()
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ channel: "leads", event: "form_submitted" }),
+  });
+</script>
+```
+
+### Domain behavior for public keys
+
+- **Default ("monitor mode"):** any domain can call a public key
+  immediately — paste it into your site, it works. Every new domain seen
+  is just logged for visibility in the dashboard, never blocked.
+- **Opt-in strict whitelist:** enable it on a specific key in the
+  dashboard, and from then on only explicitly approved domains go
+  through. Everything else gets a silent `202 { ok: true }` response — no
+  visible error, the event just isn't created. This is intentional: a
+  public key should never break the site calling it with a visible error.
+- Origin/Referer headers can be spoofed by anything that isn't a real
+  browser — this is documented honestly as protection against **mass or
+  accidental abuse**, not as strong authentication.
+
+### Rate limits specific to public keys
+
+In addition to the existing project-level limits:
+
+| Level                           | Limit                                  | Behavior over the limit                   |
+| ------------------------------- | -------------------------------------- | ----------------------------------------- |
+| Project (existing, all keys)    | 500 event()/month, 60/min              | event saved, notification skipped         |
+| Per domain (public keys only)   | 20/min, ~half the plan's monthly quota | event silently dropped (202, no error)    |
+| Per key + IP (public keys only) | 10/min                                 | event silently dropped (202, no error)    |
+| New domains tracked             | 20/day/key                             | beyond that: only counted, never blocking |
+| New-domain digest push          | max 1 every 15 min / project           | —                                         |
+
+A `202 { ok: true }` response from a public key does **not** guarantee the
+notification was actually sent — that's intentional, so a misconfigured or
+rate-limited public key never breaks the site calling it.
+
+### Kill switch
+
+Any key, public or private, can be disabled instantly from the dashboard.
+There's no server-side cache — the effect is immediate on the very next
+request, not "within a few seconds."
+
+</details>
 
 ---
 
 ## Quick start
 
+Create the client once, then use any of the four methods below.
+
 ```ts
 import { Notiformer } from "notiformer";
 
-const n = new Notiformer({ apiKey: "ntf_live_..." });
+const n = new Notiformer({
+  apiKey: "ntf_live_...", // required: your project's API key, from the dashboard
+  silent: false, // optional: true = skip every API call locally and return safe defaults — handy in tests/dev (default: false)
+  throwOnError: true, // optional: false = return a safe default instead of throwing on failure (default: true)
+  onError: (err) => {}, // optional: called on every failed call — e.g. forward to Sentry (default: none)
+});
+```
 
-// 🛑 Pause and wait for Approve / Deny — ALWAYS set fallback or handle the throw
-try {
-  const { approved, timedOut } = await n.ask({
-    message: "Deploy v2 to production?",
-    context: "Build #442 · 3 services affected",
-    timeout: 300,
-    fallback: "deny", // ← what to do if nobody responds in time
-    //   omit this and a timeout throws NotiformerError
-  });
-  if (approved) await deploy();
-  else console.log(timedOut ? "Timed out — auto-denied" : "Denied");
-} catch (err) {
-  if (err.code === "timeout") {
-    // Nobody responded and no fallback was set — handle explicitly
-    console.error("No response. Respond via the app, Telegram, or Slack.");
-  }
-}
+> More on `throwOnError`, `silent`, and `onError` in **[Advanced config](#advanced-config)** below.
 
-// 🔔 Fire-and-forget alert
+### `event()` — A simple notification
+
+Fire-and-forget. Your code continues immediately — no waiting, no approval needed. This example posts a single test notification to your own sandbox channel and yourself — nothing goes out to your whole team.
+
+```ts
 await n.event({
-  channel: "deployments",
-  event: "deploy_complete",
-  description: "v2 deployed to production",
-  icon: "🚀",
+  channel: "sandbox", // required: groups related notifications — auto-created on first use
+  event: "connection_verified", // required: machine-readable event name
+  description: "Your Notiformer setup is working perfectly!", // optional: shown in the notification body (max 500 characters, truncated beyond that)
+  icon: "🎉", // optional: emoji shown next to the notification
+  tags: ["test", "quickstart"], // optional: simple string labels, filterable in the dashboard (max 10 tags, 50 characters each — extra ones are silently dropped)
+  items: [
+    // optional: structured facts to show instead of/alongside `description` — great for
+    // a variable-length list of details (order lines, request params, related links).
+    // Max 10 items; name required (entries missing one are silently skipped, no error);
+    // value is string|number|boolean|null (never undefined — use null if you have nothing to show);
+    // link is optional and auto-normalized to a full https:// URL (bare domains/"www." both work).
+    { name: "Status", value: "Connected" },
+    { name: "Documentation", value: null, link: "docs.notiformer.com" },
+  ],
+  value: "Ready", // optional: highlighted value shown in the feed
+  notify: true, // optional: false = store silently, no push sent (default: true)
+  recipients: ["you@example.com"], // optional: notify specific people only — default: everyone on the project (max recipients per event: Dev/Pro 1, Business 3, Custom unlimited)
+});
+```
+
+> **`items` is the field to reach for when an AI agent has a list of facts to report** —
+> line items, changed fields, request parameters, related URLs — rather than trying to
+> squeeze everything into one `description` string. Each entry renders as a labeled
+> field in the app, Slack, and Telegram, and turns into a clickable button wherever a
+> `link` is set.
+
+### `ask()` — Stop and approve
+
+Pause your code and wait for a human to **Approve or Deny** from the Notiformer app, Telegram Bot, or Slack Bot. **This is a blocking call.** This example just confirms your setup is wired up correctly — a single one-off notification, not a production approval.
+
+```ts
+const { approved, timedOut, respondedAt } = await n.ask({
+  message: "Did you receive this test notification?", // required: shown as the notification title
+  timeout: 300, // optional: seconds to wait before giving up (default: 300; max: Dev 300s, Pro/Business 900s)
+  fallback: "deny", // optional, but strongly recommended: 'deny' | 'approve' — used if nobody responds in time. Omit it and a timeout throws NotiformerError instead
+  context: "Quickstart Verification · Step 1 of 1", // optional: shown in the notification body (max 500 chars)
+  details: "Click 'Approve' to confirm your integration is working properly.", // optional: long-form text shown in the app (max 10,000 chars)
 });
 
-// 🚦 Feature flag check
-if (await n.gate("new-checkout-flow")) {
-  return newCheckout(req);
+if (approved) console.log("Setup confirmed!");
+```
+
+> ⚠️ If nobody responds and no `fallback` was set, this **throws** `NotiformerError { code: 'timeout' }` — always, even with `throwOnError: false`. See the full **`ask()`** section further down for why, and for safe patterns.
+
+### `select()` — Stop and choose an option
+
+Like `ask()`, but the user picks one of **2–6 custom options** instead of Approve/Deny. Same timeout rule as `ask()`. Same idea here — a quick sandbox check of the choice payload, not a real decision.
+
+```ts
+const { selected, timedOut, respondedAt } = await n.select({
+  message: "How is your testing going?", // required: shown as the notification title
+  options: [
+    // required: 2 to 6 options
+    { value: "smooth", label: "🚀 Smooth sailing" }, // value: required, returned when this option is picked · label: required, button text shown to the user
+    { value: "reading_docs", label: "📚 Reading docs" },
+    { value: "stop_test", label: "🛑 Stop testing", isDestructive: true }, // isDestructive: optional — renders the button in red (default: false)
+  ],
+  timeout: 300, // optional: same limits as ask() (default: 300)
+  fallback: "reading_docs", // optional, but recommended: must match one of the option values above. Omit it and a timeout throws
+  context: "Interactive Sandbox Test", // optional: shown in the notification body (max 500 chars)
+  details:
+    "Select an option above to test how choice payload responses work in your code.", // optional: long-form text shown in the app (max 10,000 chars)
+});
+```
+
+### `gate()` — Get a remote variable
+
+A boolean feature flag you toggle from the dashboard — no redeploy needed. **Never throws.**
+
+> Available on **all plans**, including Dev (free). What changes per plan is how many gates you can have _active_ at once: Dev 2 · Pro 5 · Business 30 · Custom unlimited.
+
+```ts
+const isEnabled = await n.gate("enable-debug-logs", {
+  fallback: false, // optional: value returned if the gate can't be fetched, e.g. on a network error (default: false)
+  cacheTtl: 60, // optional: local in-memory cache duration in seconds — 0 always reads fresh from the server (default: 0)
+});
+
+if (isEnabled) {
+  console.log("Debug mode active");
 }
 ```
 
-> **Tip:** Use `apiKey: 'ntf_live_test'` to get started without a real key. The SDK prints setup instructions and skips all API calls.
-
 ---
 
-## Configuration
+## Advanced config
+
+The three optional constructor settings, in more depth:
 
 ```ts
 const n = new Notiformer({
-  apiKey: "ntf_live_...", // required
-  throwOnError: true, // default: true — throws on errors instead of returning null
-  // note: timeout with no fallback always throws, ignores this flag
-  silent: false, // optional — true = no API calls (useful in test/dev)
+  apiKey: "ntf_live_...",
+
+  // throwOnError (default: true)
+  // - true:  event()/gate()'s underlying calls raise NotiformerError on failure
+  // - false: they resolve to null / the fallback value instead of throwing
+  // NOTE: this does NOT apply to ask()/select() timing out with no fallback —
+  // that always throws regardless of throwOnError. See the ask() section.
+  throwOnError: true,
+
+  // silent (default: false)
+  // true = every method skips the network call entirely and returns a safe
+  // default (event() -> null, ask()/select() -> not approved/selected,
+  // gate() -> fallback). Useful so test suites and local dev don't spend
+  // quota or need a real key at all.
+  silent: process.env.NODE_ENV !== "production",
+
+  // onError (default: none)
+  // Called with the NotiformerError on every failure, in addition to (not
+  // instead of) throwing/returning a default — good for centralized
+  // logging regardless of how each call site handles the error locally.
   onError: (err) => {
-    // optional — called on any error
     Sentry.captureException(err);
   },
 });
+```
 
-// Silence in local development / tests:
+> **Tip:** Use `apiKey: 'ntf_live_test'` to try the SDK without a real key. It prints setup instructions and skips all API calls — safe to run as-is, and a quick way to see `silent`-like behavior without setting it explicitly.
+
+### Combining methods — a few realistic patterns
+
+**Defense in depth: gate() _and_ ask() for a risky rollout**
+
+```ts
+// Only offer the new flow at all if it's toggled on — then still require
+// a human to approve rolling it out to this specific customer.
+if (await n.gate("new-billing-flow")) {
+  const { approved } = await n.ask({
+    message: `Enable new billing flow for ${customer.name}?`,
+    context: `Customer ID: ${customer.id} · MRR: $${customer.mrr}`,
+    fallback: "deny",
+  });
+  if (approved) await enableNewBillingFlow(customer);
+}
+```
+
+**Audit trail: log the outcome of a select() as an event()**
+
+```ts
+const { selected } = await n.select({
+  message: `Build #${build.id} failed at step ${step}`,
+  options: [
+    { value: "retry", label: "🔄 Retry from this step" },
+    { value: "abort", label: "🛑 Abort pipeline", isDestructive: true },
+  ],
+  fallback: "abort",
+});
+
+// Keep a silent record in the feed regardless of what was chosen
+await n.event({
+  channel: "ci",
+  event: "pipeline_decision",
+  description: `Build #${build.id}: ${selected}`,
+  notify: false,
+});
+
+if (selected === "retry") await retryStep();
+if (selected === "abort") await abortPipeline();
+```
+
+**Per-environment client: real in prod, silent everywhere else**
+
+```ts
 const n = new Notiformer({
   apiKey: process.env.NOTIFORMER_API_KEY!,
   silent: process.env.NODE_ENV !== "production",
+  onError: (err) => logger.error("notiformer", err),
 });
 ```
 
@@ -123,7 +336,9 @@ const { approved, timedOut } = await n.ask({
 
 if (approved) await sendEmails();
 else console.log(timedOut ? "Auto-denied (timed out)" : "Denied by human");
+```
 
+```ts
 // ✅ Option B — explicit error handling, no silent defaults
 try {
   const { approved } = await n.ask({
@@ -140,11 +355,14 @@ try {
   }
   throw err;
 }
-
-// ❌ WRONG — missing fallback, no try/catch: throws on timeout, crashes silently
-const { approved } = await n.ask({ message: "Send emails?" });
-if (approved) await sendEmails(); // ← never reached if it throws
 ```
+
+> ❌ **Don't copy this one** — missing `fallback` **and** no `try/catch`. It throws on timeout and will crash your process unless something upstream catches it. Shown here only to illustrate the mistake, not as something to paste into your code:
+>
+> ```ts
+> const { approved } = await n.ask({ message: "Send emails?" });
+> if (approved) await sendEmails(); // ← never reached if it throws
+> ```
 
 ### Parameters
 
@@ -233,12 +451,21 @@ Send a push notification. Your code continues immediately — no waiting.
 await n.event({
   channel: "payments", // required — auto-created on first use
   event: "payment_success", // required — machine-readable event name
-  description: "$49.00 — john@co.com",
+  description: "$49.00 — john@co.com", // optional — max 500 characters, truncated beyond that
   icon: "💳",
-  tags: { plan: "pro", userId: "usr_42" },
+  tags: ["pro-plan", "usr_42"], // optional — simple string labels, max 10 tags of 50 characters each (extras dropped, not an error)
+  items: [
+    // optional — structured name/value/link facts; use for a list of details rather
+    // than one description string. name required (missing → entry silently skipped),
+    // value is string|number|boolean|null (use null instead of omitting it),
+    // link auto-normalized to https:// (bare domains/"www." both accepted).
+    // Max 10 items, name ≤60 chars, string value ≤200 chars, link ≤500 chars.
+    { name: "Order #", value: "8842" },
+    { name: "Invoice", value: null, link: "billing.example.com/inv/8842" },
+  ],
   value: "$49.00", // highlighted in the feed
   notify: true, // default true — false = store silently
-  recipients: ["cto@company.com"], // optional — notify specific people only
+  recipients: ["cto@company.com"], // optional — notify specific people only (max: Dev/Pro 1, Business 3, Custom unlimited)
 });
 ```
 
@@ -261,12 +488,14 @@ Rate limit: 60 events/minute per project (`rateLimited: true` in response if exc
 
 Toggle features remotely from the dashboard — no redeploy needed. Always reads fresh from the server; the SDK has an optional local in-memory cache only.
 
-> Available on **Pro and Business** plans only.
+> Available on **all plans**, including Dev (free). What changes per plan is how many gates you can have _active_ at once — see the table below.
 
 ```ts
 const isEnabled = await n.gate("new-checkout-flow");
 if (isEnabled) return newCheckout(req);
+```
 
+```ts
 // With options:
 const isEnabled = await n.gate("my-gate", {
   fallback: false, // returned if the gate can't be fetched (default: false)
@@ -281,6 +510,13 @@ const result = await n.gateDetails("my-gate");
 n.clearGateCache("my-gate");
 n.clearGateCache();
 ```
+
+| Plan     | Max active gates / project |
+| -------- | -------------------------- |
+| Dev      | 2                          |
+| Pro      | 5                          |
+| Business | 30                         |
+| Custom   | Unlimited                  |
 
 ---
 
@@ -358,11 +594,33 @@ try {
 
 > **Email verification required** on all plans. You must verify your email address before creating projects or using the API.
 
+### Field limits
+
+Every free-text/array field is capped. Exceeding a limit below never errors the whole
+request — the field is silently truncated or, for `items` entries missing a `name`,
+that one entry is dropped. The only fields that DO return a validation error when
+invalid are `channel`, `event`, `recipients` (must be valid emails), and the
+`recipients` count (enforced per-plan, see the table above).
+
+| Field                        | Limit                          | Behavior beyond the limit                                                                               |
+| ---------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `description`                | 500 characters                 | Truncated                                                                                               |
+| `icon`                       | 10 characters                  | Truncated                                                                                               |
+| `tags` (array)               | 10 entries, 50 characters each | Extra entries dropped, long ones truncated                                                              |
+| `items` (array)              | 10 entries                     | Extra entries dropped                                                                                   |
+| `items[].name`               | 60 characters, **required**    | Entry silently skipped if missing/blank                                                                 |
+| `items[].value`              | 200 characters if a string     | Truncated (never send `undefined` — use `null`)                                                         |
+| `items[].link`               | 500 characters                 | Dropped if invalid or too long (rest of the entry still saves)                                          |
+| `ask()`/`select()` `message` | 300 characters                 | Truncated                                                                                               |
+| `ask()`/`select()` `context` | 500 characters                 | Truncated                                                                                               |
+| `ask()`/`select()` `details` | 10,000 characters              | Truncated — only ever stored/shown in-app, never sent to push/Telegram/Slack                            |
+| Push notification title/body | ~100 / ~300 characters         | Truncated server-side regardless of the above, as a hard safety net against APNs/FCM's ~4KB payload cap |
+
 ---
 
 ## REST API
 
-All SDK methods wrap REST endpoints. Use them from Python, Go, Ruby, curl, or any HTTP client:
+All SDK methods wrap REST endpoints. Use them from Python, Go, Ruby, curl, or any HTTP client — or see the **[official Python SDK](https://pypi.org/project/notiformer/)** for a ready-made client:
 
 ```
 POST  https://api.notiformer.com/v1/events       — n.event()
@@ -378,77 +636,11 @@ All endpoints require `Authorization: Bearer ntf_live_...`.
 
 **Important for polling ask/select:** if `GET /v1/ask/:id` returns `HTTP 408` with `{ "code": "timeout" }`, it means the request expired with no fallback configured — treat this as an error, not a normal resolution.
 
-### Python example
-
-```python
-import requests, time
-
-NF_KEY  = "ntf_live_..."
-HEADERS = {"Authorization": f"Bearer {NF_KEY}"}
-
-# Create an approval request (with fallback for safety)
-r = requests.post(
-    "https://api.notiformer.com/v1/ask",
-    headers=HEADERS,
-    json={"message": "Delete 500 rows?", "timeout": 300, "fallback": "deny"}
-)
-ask_id = r.json()["id"]
-
-# Poll until resolved
-while True:
-    poll = requests.get(
-        f"https://api.notiformer.com/v1/ask/{ask_id}",
-        headers=HEADERS
-    ).json()
-
-    # Handle ambiguous timeout (no fallback was set)
-    if poll.get("code") == "timeout":
-        raise RuntimeError("No response — set a fallback or ensure you can respond in time")
-
-    if poll["status"] != "pending":
-        break
-    time.sleep(2)
-
-if poll["status"] == "approved":
-    db.execute(delete_query)
-else:
-    print("Cancelled:", poll["status"])
-```
+A full, importable **Postman collection** (with a matching environment) covering every endpoint above is available from the [docs](https://notiformer.com/docs#postman).
 
 ---
 
 ## Common patterns
-
-### Safe destructive action
-
-```ts
-// Always set fallback: 'deny' for anything destructive
-const { approved, timedOut } = await n.ask({
-  message: `Delete ${count} rows from ${table}?`,
-  context: `WHERE: ${condition} · Environment: production`,
-  details: `Estimated rows: ${count}\nQuery preview: ${query}`,
-  timeout: 120,
-  fallback: "deny", // safe — auto-deny if nobody responds
-});
-if (!approved) throw new Error(timedOut ? "Timed out — auto-denied" : "Denied");
-await db.execute(query);
-```
-
-### Multi-branch agent decision
-
-```ts
-// Always set fallback to the safest option
-const { selected } = await n.select({
-  message: `Build #${build.id} failed at step ${step}`,
-  options: [
-    { value: "retry", label: "🔄 Retry from this step" },
-    { value: "restart", label: "↩ Restart from scratch" },
-    { value: "abort", label: "🛑 Abort pipeline", isDestructive: true },
-  ],
-  fallback: "abort", // safe — abort if nobody decides
-  timeout: 600,
-});
-```
 
 ### Silent analytics
 
@@ -456,7 +648,10 @@ const { selected } = await n.select({
 await n.event({
   channel: "analytics",
   event: "page_view",
-  tags: { path: req.path, userId: session.userId },
+  items: [
+    { name: "path", value: req.path },
+    { name: "userId", value: session.userId ?? null },
+  ],
   notify: false, // stored in feed, no push notification
 });
 ```
@@ -470,12 +665,17 @@ app.use(async (err, req, res, next) => {
     event: "unhandled_error",
     description: err.message,
     icon: "🔴",
-    tags: { path: req.path, method: req.method },
+    items: [
+      { name: "path", value: req.path },
+      { name: "method", value: req.method },
+    ],
     notify: true,
   });
   res.status(500).json({ error: "Internal server error" });
 });
 ```
+
+> More combined examples (gate + ask, select + event, per-environment client) are in **[Advanced config](#advanced-config)** above.
 
 ---
 
@@ -489,7 +689,9 @@ app.use(async (err, req, res, next) => {
 ## Links
 
 - **Dashboard:** [app.notiformer.com](https://app.notiformer.com)
-- **Docs:** [docs.notiformer.com](https://docs.notiformer.com)
+- **Docs:** [notiformer.com/docs](https://notiformer.com/docs)
 - **Pricing:** [notiformer.com/#pricing](https://notiformer.com/#pricing)
 - **npm:** [npmjs.com/package/notiformer](https://www.npmjs.com/package/notiformer)
+- **PyPI (Python SDK):** [pypi.org/project/notiformer](https://pypi.org/project/notiformer/)
+- **GitHub:** [github.com/notiformer](https://github.com/notiformer)
 - **Support:** [hello@notiformer.com](mailto:hello@notiformer.com)
